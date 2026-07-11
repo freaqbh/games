@@ -67,15 +67,41 @@ export class World {
     this._materialCache = {};
   }
 
-  _getMaterial(key, texture) {
+  _getMaterial(key, opts) {
     if (!this._materialCache[key]) {
-      this._materialCache[key] = new THREE.MeshStandardMaterial({
-        map: texture,
-        roughness: 0.85,
-        metalness: 0.05,
-      });
+      this._materialCache[key] = new THREE.MeshStandardMaterial(opts);
     }
     return this._materialCache[key];
+  }
+
+  _scaleUVs(geo, repeatX, repeatY) {
+    const uvs = geo.attributes.uv;
+    for (let i = 0; i < uvs.count; i++) {
+      uvs.setXY(i, uvs.getX(i) * repeatX, uvs.getY(i) * repeatY);
+    }
+  }
+
+  _getWallMaterial(room) {
+    let key, texName;
+    switch (room.textureType) {
+      case 'wallpaper': key = 'wall_wallpaper'; texName = 'wallpaper'; break;
+      case 'concrete':  key = 'wall_concrete';  texName = 'concrete';  break;
+      case 'tiles':     key = 'wall_tiles';     texName = 'floorTiles'; break;
+      case 'plaster':
+      default:          key = 'wall_plaster';   texName = 'wallPlaster'; break;
+    }
+    return this._getMaterial(key, { map: this.textures.get(texName), roughness: 0.85, metalness: 0.05 });
+  }
+
+  _getFloorMaterial(room) {
+    let key, texName;
+    switch (room.textureType) {
+      case 'concrete': key = 'floor_concrete'; texName = 'concrete';  break;
+      case 'tiles':    key = 'floor_tiles';    texName = 'floorTiles'; break;
+      case 'dirt':     key = 'floor_dirt';     texName = 'dirt';       break;
+      default:         key = 'floor_wood';     texName = 'floorWood';  break;
+    }
+    return this._getMaterial(key, { map: this.textures.get(texName), roughness: 0.9, metalness: 0.05 });
   }
 
   build() {
@@ -377,7 +403,7 @@ export class World {
 
   _buildStairwells() {
     const stairGeo = new THREE.BoxGeometry(3, 0.15, 3);
-    const stairMat = new THREE.MeshStandardMaterial({ color: 0x3a3a3a, roughness: 0.9 });
+    const stairMat = this._getMaterial('prop_stair', { color: 0x3a3a3a, roughness: 0.9 });
 
     for (let i = 0; i < 8; i++) {
       const step = new THREE.Mesh(stairGeo, stairMat);
@@ -398,36 +424,17 @@ export class World {
     }
   }
 
-  _getWallTexture(room) {
-    switch (room.textureType) {
-      case 'wallpaper': return this.textures.clone('wallpaper', room.width / 3, 1);
-      case 'concrete': return this.textures.clone('concrete', room.width / 3, 1);
-      case 'tiles': return this.textures.clone('floorTiles', room.width / 3, 1);
-      case 'plaster':
-      default: return this.textures.clone('wallPlaster', room.width / 3, 1);
-    }
-  }
-
-  _getFloorTexture(room) {
-    switch (room.textureType) {
-      case 'concrete': return this.textures.clone('concrete', room.width / 4, room.depth / 4);
-      case 'tiles': return this.textures.clone('floorTiles', room.width / 2, room.depth / 2);
-      case 'dirt': return this.textures.clone('dirt', room.width / 3, room.depth / 3);
-      default: return this.textures.clone('floorWood', room.width / 2, room.depth / 2);
-    }
-  }
-
   _buildRoom(room) {
     const y = room.floor * CONFIG.world.wallHeight;
     const h = CONFIG.world.wallHeight;
     const t = CONFIG.world.wallThickness;
 
-    const floorTex = this._getFloorTexture(room);
-    const wallTex = this._getWallTexture(room);
-    const ceilTex = this.textures.clone('ceiling', room.width / 4, room.depth / 4);
+    const floorMat = this._getFloorMaterial(room);
+    const wallMat  = this._getWallMaterial(room);
+    const ceilMat  = this._getMaterial('ceiling', { map: this.textures.get('ceiling'), roughness: 0.95, metalness: 0.02 });
 
     const floorGeo = new THREE.PlaneGeometry(room.width, room.depth);
-    const floorMat = new THREE.MeshStandardMaterial({ map: floorTex, roughness: 0.9, metalness: 0.05 });
+    this._scaleUVs(floorGeo, room.width / 2, room.depth / 2);
     const floorMesh = new THREE.Mesh(floorGeo, floorMat);
     floorMesh.rotation.x = -Math.PI / 2;
     floorMesh.position.set(room.x + room.width / 2, y, room.z + room.depth / 2);
@@ -436,7 +443,7 @@ export class World {
     room.meshes.push(floorMesh);
 
     const ceilGeo = new THREE.PlaneGeometry(room.width, room.depth);
-    const ceilMat = new THREE.MeshStandardMaterial({ map: ceilTex, roughness: 0.95, metalness: 0.02 });
+    this._scaleUVs(ceilGeo, room.width / 4, room.depth / 4);
     const ceilMesh = new THREE.Mesh(ceilGeo, ceilMat);
     ceilMesh.rotation.x = Math.PI / 2;
     ceilMesh.position.set(room.x + room.width / 2, y + h, room.z + room.depth / 2);
@@ -444,27 +451,19 @@ export class World {
     this.group.add(ceilMesh);
     room.meshes.push(ceilMesh);
 
-    this._buildWalls(room, y, h, t, wallTex);
+    this._buildWalls(room, y, h, t, wallMat);
 
     if (room.hasFlickeringLight) {
       const light = new THREE.PointLight(room.ambientColor, (room.ambientIntensity * 3) * 50, 15, 2);
       light.position.set(room.x + room.width / 2, y + h - 0.3, room.z + room.depth / 2);
-      light.castShadow = true;
-      light.shadow.mapSize.set(512, 512);
+      // No castShadow — each shadow-casting PointLight uses 6 texture units (cubemap).
+      // With 15+ rooms this blows past MAX_TEXTURE_IMAGE_UNITS(16).
       this.group.add(light);
       room.lights.push(light);
     }
   }
 
-  _cloneTexture(tex, repeatX, repeatY) {
-    if (!tex) return null;
-    const map = tex.clone();
-    map.needsUpdate = true;
-    map.repeat.set(repeatX, repeatY);
-    return map;
-  }
-
-  _buildWalls(room, y, h, t, wallTex) {
+  _buildWalls(room, y, h, t, wallMat) {
     const walls = [
       { dir: 'north', x: room.x, z: room.z + room.depth, w: room.width, rot: 0 },
       { dir: 'south', x: room.x, z: room.z, w: room.width, rot: Math.PI },
@@ -476,9 +475,8 @@ export class World {
       const doorways = room.doors.filter(d => d.wall === wall.dir);
       if (doorways.length === 0) {
         const geo = new THREE.BoxGeometry(wall.w, h, t);
-        const map = this._cloneTexture(wallTex, wall.w / 3, 1);
-        const mat = new THREE.MeshStandardMaterial({ map: map, roughness: 0.85, metalness: 0.05 });
-        const mesh = new THREE.Mesh(geo, mat);
+        this._scaleUVs(geo, wall.w / 3, 1);
+        const mesh = new THREE.Mesh(geo, wallMat);
         mesh.position.set(wall.x + wall.w / 2, y + h / 2, wall.z);
         mesh.rotation.y = wall.rot;
         mesh.castShadow = true;
@@ -487,12 +485,13 @@ export class World {
         room.meshes.push(mesh);
         this.colliders.push(mesh);
       } else {
-        this._buildWallWithDoorways(room, wall, y, h, t, wallTex, doorways);
+        this._buildWallWithDoorways(room, wall, y, h, t, wallMat, doorways);
       }
     }
   }
 
-  _buildWallWithDoorways(room, wall, y, h, t, wallTex, doorways) {
+  _buildWallWithDoorways(room, wall, y, h, t, wallMat, doorways) {
+    const doorMat = this._getMaterial('door', { map: this.textures.get('door'), roughness: 0.7, metalness: 0.1 });
     doorways.sort((a, b) => a.position - b.position);
     let lastEnd = 0;
 
@@ -503,9 +502,8 @@ export class World {
       if (doorStart > lastEnd) {
         const segW = doorStart - lastEnd;
         const geo = new THREE.BoxGeometry(segW, h, t);
-        const map = this._cloneTexture(wallTex, segW / 3, 1);
-        const mat = new THREE.MeshStandardMaterial({ map: map, roughness: 0.85, metalness: 0.05 });
-        const mesh = new THREE.Mesh(geo, mat);
+        this._scaleUVs(geo, segW / 3, 1);
+        const mesh = new THREE.Mesh(geo, wallMat);
         mesh.position.set(wall.x + lastEnd + segW / 2, y + h / 2, wall.z);
         mesh.rotation.y = wall.rot;
         mesh.castShadow = true;
@@ -518,9 +516,8 @@ export class World {
       const aboveH = h - CONFIG.world.doorHeight;
       if (aboveH > 0) {
         const geo = new THREE.BoxGeometry(door.width, aboveH, t);
-        const map = this._cloneTexture(wallTex, door.width / 3, aboveH / 3);
-        const mat = new THREE.MeshStandardMaterial({ map: map, roughness: 0.85, metalness: 0.05 });
-        const mesh = new THREE.Mesh(geo, mat);
+        this._scaleUVs(geo, door.width / 3, aboveH / 3);
+        const mesh = new THREE.Mesh(geo, wallMat);
         mesh.position.set(wall.x + door.position, y + CONFIG.world.doorHeight + aboveH / 2, wall.z);
         mesh.rotation.y = wall.rot;
         mesh.castShadow = true;
@@ -531,7 +528,6 @@ export class World {
 
       if (door.locked) {
         const doorGeo = new THREE.BoxGeometry(door.width, CONFIG.world.doorHeight, 0.08);
-        const doorMat = new THREE.MeshStandardMaterial({ map: this.textures.get('door'), roughness: 0.7, metalness: 0.1 });
         const doorMesh = new THREE.Mesh(doorGeo, doorMat);
         doorMesh.position.set(wall.x + door.position, y + CONFIG.world.doorHeight / 2, wall.z);
         doorMesh.rotation.y = wall.rot;
@@ -551,9 +547,8 @@ export class World {
     if (lastEnd < wall.w) {
       const segW = wall.w - lastEnd;
       const geo = new THREE.BoxGeometry(segW, h, t);
-      const map = this._cloneTexture(wallTex, segW / 3, 1);
-      const mat = new THREE.MeshStandardMaterial({ map: map, roughness: 0.85, metalness: 0.05 });
-      const mesh = new THREE.Mesh(geo, mat);
+      this._scaleUVs(geo, segW / 3, 1);
+      const mesh = new THREE.Mesh(geo, wallMat);
       mesh.position.set(wall.x + lastEnd + segW / 2, y + h / 2, wall.z);
       mesh.rotation.y = wall.rot;
       mesh.castShadow = true;
@@ -593,7 +588,7 @@ export class World {
     switch (item.type) {
       case 'table':
         geo = new THREE.BoxGeometry(item.large ? 3 : 1.5, 0.08, item.large ? 1.5 : 0.8);
-        mat = new THREE.MeshStandardMaterial({ color: 0x3a2a1a, roughness: 0.8 });
+        mat = this._getMaterial('prop_table', { color: 0x3a2a1a, roughness: 0.8 });
         mesh = new THREE.Mesh(geo, mat);
         mesh.position.set(room.x + item.x, y + 0.75, room.z + item.z);
         mesh.rotation.y = item.rot;
@@ -602,7 +597,7 @@ export class World {
         mesh.userData = { type: 'table' };
 
         const legGeo = new THREE.CylinderGeometry(0.04, 0.04, 0.75, 8);
-        const legMat = new THREE.MeshStandardMaterial({ color: 0x2a1a0a, roughness: 0.9 });
+        const legMat = this._getMaterial('prop_tableLeg', { color: 0x2a1a0a, roughness: 0.9 });
         const offsets = item.large ? [[-1.4, -0.7], [1.4, -0.7], [-1.4, 0.7], [1.4, 0.7]] : [[-0.7, -0.35], [0.7, -0.35], [-0.7, 0.35], [0.7, 0.35]];
         for (const [ox, oz] of offsets) {
           const leg = new THREE.Mesh(legGeo, legMat);
@@ -614,7 +609,7 @@ export class World {
 
       case 'desk':
         geo = new THREE.BoxGeometry(1.2, 0.06, 0.6);
-        mat = new THREE.MeshStandardMaterial({ color: 0x4a3520, roughness: 0.75 });
+        mat = this._getMaterial('prop_desk', { color: 0x4a3520, roughness: 0.75 });
         mesh = new THREE.Mesh(geo, mat);
         mesh.position.set(room.x + item.x, y + 0.72, room.z + item.z);
         mesh.rotation.y = item.rot;
@@ -625,7 +620,7 @@ export class World {
 
       case 'chair':
         geo = new THREE.BoxGeometry(0.45, 0.04, 0.45);
-        mat = new THREE.MeshStandardMaterial({ color: 0x3a2a1a, roughness: 0.85 });
+        mat = this._getMaterial('prop_chair', { color: 0x3a2a1a, roughness: 0.85 });
         mesh = new THREE.Mesh(geo, mat);
         mesh.position.set(room.x + item.x, y + 0.45, room.z + item.z);
         mesh.rotation.y = item.rot;
@@ -636,7 +631,7 @@ export class World {
 
       case 'bed':
         geo = new THREE.BoxGeometry(0.9, 0.35, 1.9);
-        mat = new THREE.MeshStandardMaterial({ color: 0x5a4a3a, roughness: 0.9 });
+        mat = this._getMaterial('prop_bed', { color: 0x5a4a3a, roughness: 0.9 });
         mesh = new THREE.Mesh(geo, mat);
         mesh.position.set(room.x + item.x, y + 0.175, room.z + item.z);
         mesh.rotation.y = item.rot;
@@ -647,7 +642,7 @@ export class World {
 
       case 'cabinet':
         geo = new THREE.BoxGeometry(0.8, 1.8, 0.5);
-        mat = new THREE.MeshStandardMaterial({ color: 0x3a2a1a, roughness: 0.8 });
+        mat = this._getMaterial('prop_cabinet', { color: 0x3a2a1a, roughness: 0.8 });
         mesh = new THREE.Mesh(geo, mat);
         mesh.position.set(room.x + item.x, y + 0.9, room.z + item.z);
         mesh.rotation.y = item.rot;
@@ -658,7 +653,7 @@ export class World {
 
       case 'shelf':
         geo = new THREE.BoxGeometry(1.2, 2.0, 0.35);
-        mat = new THREE.MeshStandardMaterial({ color: 0x4a3520, roughness: 0.85 });
+        mat = this._getMaterial('prop_shelf', { color: 0x4a3520, roughness: 0.85 });
         mesh = new THREE.Mesh(geo, mat);
         mesh.position.set(room.x + item.x, y + 1.0, room.z + item.z);
         mesh.rotation.y = item.rot;
@@ -669,7 +664,7 @@ export class World {
 
       case 'painting':
         geo = new THREE.PlaneGeometry(0.8, 0.6);
-        mat = new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.6 });
+        mat = this._getMaterial('prop_painting', { color: 0x2a2a2a, roughness: 0.6 });
         mesh = new THREE.Mesh(geo, mat);
         mesh.position.set(room.x + item.x, y + 1.8, room.z + item.z);
         mesh.rotation.y = item.rot;
@@ -679,7 +674,7 @@ export class World {
       case 'drawing':
         const drawTex = this.textures.get(`drawing${(item.variant || 0) + 1}`);
         geo = new THREE.PlaneGeometry(0.5, 0.5);
-        mat = new THREE.MeshStandardMaterial({ map: drawTex, roughness: 0.9 });
+        mat = this._getMaterial('prop_drawing' + (item.variant || 0), { map: drawTex, roughness: 0.9 });
         mesh = new THREE.Mesh(geo, mat);
         mesh.position.set(room.x + item.x, y + 1.2, room.z + item.z);
         mesh.rotation.y = item.rot;
@@ -688,7 +683,7 @@ export class World {
 
       case 'safe':
         geo = new THREE.BoxGeometry(0.5, 0.5, 0.4);
-        mat = new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.6, metalness: 0.4 });
+        mat = this._getMaterial('prop_safe', { color: 0x2a2a2a, roughness: 0.6, metalness: 0.4 });
         mesh = new THREE.Mesh(geo, mat);
         mesh.position.set(room.x + item.x, y + 0.25, room.z + item.z);
         mesh.rotation.y = item.rot;
@@ -699,7 +694,7 @@ export class World {
 
       case 'breaker':
         geo = new THREE.BoxGeometry(0.6, 0.8, 0.2);
-        mat = new THREE.MeshStandardMaterial({ color: 0x3a3a3a, roughness: 0.7, metalness: 0.3 });
+        mat = this._getMaterial('prop_breaker', { color: 0x3a3a3a, roughness: 0.7, metalness: 0.3 });
         mesh = new THREE.Mesh(geo, mat);
         mesh.position.set(room.x + item.x, y + 1.2, room.z + item.z);
         mesh.rotation.y = item.rot;
@@ -710,7 +705,7 @@ export class World {
 
       case 'ritual_circle':
         geo = new THREE.RingGeometry(1.5, 1.8, 32);
-        mat = new THREE.MeshStandardMaterial({ color: 0x8b0000, roughness: 0.9, side: THREE.DoubleSide });
+        mat = this._getMaterial('prop_ritual', { color: 0x8b0000, roughness: 0.9, side: THREE.DoubleSide });
         mesh = new THREE.Mesh(geo, mat);
         mesh.rotation.x = -Math.PI / 2;
         mesh.position.set(room.x + item.x, y + 0.01, room.z + item.z);
@@ -719,7 +714,7 @@ export class World {
 
       case 'candle':
         geo = new THREE.CylinderGeometry(0.03, 0.03, 0.15, 8);
-        mat = new THREE.MeshStandardMaterial({ color: 0xf5f5dc, roughness: 0.8 });
+        mat = this._getMaterial('prop_candle', { color: 0xf5f5dc, roughness: 0.8 });
         mesh = new THREE.Mesh(geo, mat);
         mesh.position.set(room.x + item.x, y + 0.075, room.z + item.z);
         mesh.userData = { type: 'candle' };
@@ -735,27 +730,7 @@ export class World {
     return mesh;
   }
 
-  _getFloorTexture(room) {
-    if (room.textureType === 'tiles') {
-      return this.textures.clone('floorTiles', room.width / 3, room.depth / 3);
-    } else if (room.textureType === 'concrete') {
-      return this.textures.clone('dirt', room.width / 4, room.depth / 4);
-    } else {
-      return this.textures.clone('floorWood', room.width / 4, room.depth / 4);
-    }
-  }
-
-  _getWallTexture(room) {
-    if (room.textureType === 'wallpaper') {
-      return this.textures.clone('wallpaper', room.width / 3, 1);
-    } else if (room.textureType === 'concrete') {
-      return this.textures.clone('concrete', room.width / 3, 1);
-    } else if (room.textureType === 'tiles') {
-      return this.textures.clone('floorTiles', room.width / 3, 1);
-    } else {
-      return this.textures.clone('wallPlaster', room.width / 3, 1);
-    }
-  }
+  // _getFloorTexture / _getWallTexture removed — replaced by _getFloorMaterial / _getWallMaterial
 
   _addGlobalLighting() {
     const ambient = new THREE.AmbientLight(CONFIG.world.ambientColor, CONFIG.world.ambientIntensity);
@@ -808,14 +783,14 @@ export class World {
     if (cidx >= 0) this.colliders.splice(cidx, 1);
     this.group.remove(obj);
     if (obj.geometry) obj.geometry.dispose();
-    if (obj.material) obj.material.dispose();
+    // Don't dispose material — it's shared via _materialCache
   }
 
   createNote(room, noteId, offsetX, offsetZ) {
     const y = room.floor * CONFIG.world.wallHeight;
     const geo = new THREE.PlaneGeometry(0.3, 0.4);
     const tex = this.textures.get('wallPlaster');
-    const mat = new THREE.MeshStandardMaterial({
+    const mat = this._getMaterial('prop_note', {
       color: 0xc9b88f, roughness: 0.95, side: THREE.DoubleSide,
       emissive: 0x332200, emissiveIntensity: 0.1,
     });
@@ -833,7 +808,7 @@ export class World {
     const y = room.floor * CONFIG.world.wallHeight;
     const group = new THREE.Group();
     const ringGeo = new THREE.TorusGeometry(0.05, 0.015, 8, 16);
-    const ringMat = new THREE.MeshStandardMaterial({ color: 0xb8956a, roughness: 0.4, metalness: 0.6 });
+    const ringMat = this._getMaterial('prop_keyRing', { color: 0xb8956a, roughness: 0.4, metalness: 0.6 });
     const ring = new THREE.Mesh(ringGeo, ringMat);
     ring.castShadow = true;
     group.add(ring);
@@ -856,13 +831,13 @@ export class World {
     const y = room.floor * CONFIG.world.wallHeight;
     const group = new THREE.Group();
     const baseGeo = new THREE.CylinderGeometry(0.08, 0.1, 0.04, 8);
-    const baseMat = new THREE.MeshStandardMaterial({ color: 0x4a4a4a, roughness: 0.6, metalness: 0.3 });
+    const baseMat = this._getMaterial('prop_ritualBase', { color: 0x4a4a4a, roughness: 0.6, metalness: 0.3 });
     const base = new THREE.Mesh(baseGeo, baseMat);
     base.castShadow = true;
     group.add(base);
 
     const itemGeo = new THREE.OctahedronGeometry(0.06, 0);
-    const itemMat = new THREE.MeshStandardMaterial({
+    const itemMat = this._getMaterial('prop_ritualGem_' + color.toString(16), {
       color: color, roughness: 0.3, metalness: 0.5,
       emissive: color, emissiveIntensity: 0.3,
     });
