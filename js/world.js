@@ -464,11 +464,13 @@ export class World {
   }
 
   _buildWalls(room, y, h, t, wallMat) {
+    // dx,dz = axis the wall extends along. Segments are offset along this axis.
+    // ox,oz = wall origin (start corner).
     const walls = [
-      { dir: 'north', x: room.x, z: room.z + room.depth, w: room.width, rot: 0 },
-      { dir: 'south', x: room.x, z: room.z, w: room.width, rot: Math.PI },
-      { dir: 'east', x: room.x + room.width, z: room.z, w: room.depth, rot: -Math.PI / 2 },
-      { dir: 'west', x: room.x, z: room.z, w: room.depth, rot: Math.PI / 2 },
+      { dir: 'north', ox: room.x, oz: room.z + room.depth, w: room.width, dx: 1, dz: 0, rot: 0 },
+      { dir: 'south', ox: room.x, oz: room.z,              w: room.width, dx: 1, dz: 0, rot: Math.PI },
+      { dir: 'east',  ox: room.x + room.width, oz: room.z, w: room.depth, dx: 0, dz: 1, rot: -Math.PI / 2 },
+      { dir: 'west',  ox: room.x,              oz: room.z, w: room.depth, dx: 0, dz: 1, rot: Math.PI / 2 },
     ];
 
     for (const wall of walls) {
@@ -477,7 +479,8 @@ export class World {
         const geo = new THREE.BoxGeometry(wall.w, h, t);
         this._scaleUVs(geo, wall.w / 3, 1);
         const mesh = new THREE.Mesh(geo, wallMat);
-        mesh.position.set(wall.x + wall.w / 2, y + h / 2, wall.z);
+        const c = wall.w / 2;
+        mesh.position.set(wall.ox + c * wall.dx, y + h / 2, wall.oz + c * wall.dz);
         mesh.rotation.y = wall.rot;
         mesh.castShadow = true;
         mesh.receiveShadow = true;
@@ -504,7 +507,8 @@ export class World {
         const geo = new THREE.BoxGeometry(segW, h, t);
         this._scaleUVs(geo, segW / 3, 1);
         const mesh = new THREE.Mesh(geo, wallMat);
-        mesh.position.set(wall.x + lastEnd + segW / 2, y + h / 2, wall.z);
+        const c = lastEnd + segW / 2;
+        mesh.position.set(wall.ox + c * wall.dx, y + h / 2, wall.oz + c * wall.dz);
         mesh.rotation.y = wall.rot;
         mesh.castShadow = true;
         mesh.receiveShadow = true;
@@ -518,7 +522,11 @@ export class World {
         const geo = new THREE.BoxGeometry(door.width, aboveH, t);
         this._scaleUVs(geo, door.width / 3, aboveH / 3);
         const mesh = new THREE.Mesh(geo, wallMat);
-        mesh.position.set(wall.x + door.position, y + CONFIG.world.doorHeight + aboveH / 2, wall.z);
+        mesh.position.set(
+          wall.ox + door.position * wall.dx,
+          y + CONFIG.world.doorHeight + aboveH / 2,
+          wall.oz + door.position * wall.dz
+        );
         mesh.rotation.y = wall.rot;
         mesh.castShadow = true;
         mesh.receiveShadow = true;
@@ -529,7 +537,11 @@ export class World {
       if (door.locked) {
         const doorGeo = new THREE.BoxGeometry(door.width, CONFIG.world.doorHeight, 0.08);
         const doorMesh = new THREE.Mesh(doorGeo, doorMat);
-        doorMesh.position.set(wall.x + door.position, y + CONFIG.world.doorHeight / 2, wall.z);
+        doorMesh.position.set(
+          wall.ox + door.position * wall.dx,
+          y + CONFIG.world.doorHeight / 2,
+          wall.oz + door.position * wall.dz
+        );
         doorMesh.rotation.y = wall.rot;
         doorMesh.castShadow = true;
         doorMesh.receiveShadow = true;
@@ -549,7 +561,8 @@ export class World {
       const geo = new THREE.BoxGeometry(segW, h, t);
       this._scaleUVs(geo, segW / 3, 1);
       const mesh = new THREE.Mesh(geo, wallMat);
-      mesh.position.set(wall.x + lastEnd + segW / 2, y + h / 2, wall.z);
+      const c = lastEnd + segW / 2;
+      mesh.position.set(wall.ox + c * wall.dx, y + h / 2, wall.oz + c * wall.dz);
       mesh.rotation.y = wall.rot;
       mesh.castShadow = true;
       mesh.receiveShadow = true;
@@ -795,7 +808,11 @@ export class World {
       emissive: 0x332200, emissiveIntensity: 0.1,
     });
     const mesh = new THREE.Mesh(geo, mat);
-    mesh.position.set(room.x + room.width / 2 + offsetX, y + 0.8, room.z + room.depth / 2 + offsetZ);
+    // Clamp position to stay inside room bounds (0.5m margin from walls)
+    const margin = 0.5;
+    const px = Math.max(room.x + margin, Math.min(room.x + room.width - margin, room.x + room.width / 2 + offsetX));
+    const pz = Math.max(room.z + margin, Math.min(room.z + room.depth - margin, room.z + room.depth / 2 + offsetZ));
+    mesh.position.set(px, y + 0.8, pz);
     mesh.rotation.y = Math.PI / 4;
     mesh.castShadow = true;
     mesh.userData = { type: 'note', noteId: noteId, collected: false };
@@ -820,7 +837,10 @@ export class World {
     const tooth = new THREE.Mesh(toothGeo, ringMat);
     tooth.position.set(0.015, -0.14, 0);
     group.add(tooth);
-    group.position.set(room.x + room.width / 2 + offsetX, y + 0.85, room.z + room.depth / 2 + offsetZ);
+    const margin = 0.5;
+    const px = Math.max(room.x + margin, Math.min(room.x + room.width - margin, room.x + room.width / 2 + offsetX));
+    const pz = Math.max(room.z + margin, Math.min(room.z + room.depth - margin, room.z + room.depth / 2 + offsetZ));
+    group.position.set(px, y + 0.85, pz);
     group.userData = { type: 'key', keyId: keyId, keyName: keyName, collected: false };
     this.group.add(group);
     this.interactables.push(group);
@@ -850,7 +870,10 @@ export class World {
     glow.position.y = 0.1;
     group.add(glow);
 
-    group.position.set(room.x + room.width / 2 + offsetX, y + 0.9, room.z + room.depth / 2 + offsetZ);
+    const margin = 0.5;
+    const px = Math.max(room.x + margin, Math.min(room.x + room.width - margin, room.x + room.width / 2 + offsetX));
+    const pz = Math.max(room.z + margin, Math.min(room.z + room.depth - margin, room.z + room.depth / 2 + offsetZ));
+    group.position.set(px, y + 0.9, pz);
     group.userData = { type: 'ritual_item', itemId: itemId, itemName: itemName, collected: false, baseItem: item, glow: glow };
     this.group.add(group);
     this.interactables.push(group);
